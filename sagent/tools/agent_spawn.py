@@ -509,9 +509,7 @@ class AgentSpawn:
         if isinstance(resolved, ToolResult):
             return resolved
         child_model, child_spec = resolved
-        child_tools = self._resolve_tools(
-            tools, parent_agent, bundle_background=not hot
-        )
+        child_tools = self._resolve_tools(tools, parent_agent)
         if isinstance(child_tools, ToolResult):
             return child_tools
 
@@ -1094,8 +1092,6 @@ class AgentSpawn:
         self,
         names: list[str] | None,
         parent_agent: _Agent | None,
-        *,
-        bundle_background: bool = True,
     ) -> list[Tool] | ToolResult:
         """Resolve LLM-supplied tool names to tool instances.
 
@@ -1111,19 +1107,12 @@ class AgentSpawn:
         ``AgentSpawn`` is granted. Any agent that can create
         persistent / background work must be able to list, cancel,
         and foreground that work -- decoupling the two is how
-        runaway children become uncancellable.
-
-        Args:
-          names: LLM-supplied tool-name whitelist, or ``None`` to inherit.
-          parent_agent: Spawning agent, for the inherit fallthrough.
-          bundle_background: Whether to auto-add ``BackgroundTask`` per the
-              rule above. A hot spawn (see :meth:`run`'s ``hot`` directive)
-              passes ``False``: the whole point of hot mode is a child
-              toolset -- and therefore a rendered system prompt -- that
-              matches the parent's exactly, and auto-adding a tool the
-              parent never advertised is precisely the kind of prefix
-              mutation hot spawning exists to avoid (#361).
-
+        runaway children become uncancellable. This applies to hot
+        spawns too: a hot child's rendered prompt never reflects its
+        own tool list anyway (``frozen_system`` skips that loop
+        entirely, see #361), so bundling ``BackgroundTask`` here costs
+        nothing on the cache side while keeping the cancel-capability
+        guarantee intact.
         """
         available: list[Tool]
         if self._tools is not None:
@@ -1145,7 +1134,7 @@ class AgentSpawn:
                     is_error=True,
                 )
             resolved = [by_name[n] for n in names]
-        return _bundle_background_task(resolved) if bundle_background else resolved
+        return _bundle_background_task(resolved)
 
     def _child_session_dir(
         self,

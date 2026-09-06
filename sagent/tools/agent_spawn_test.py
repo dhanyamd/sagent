@@ -590,27 +590,16 @@ def test_resolve_tools_bundle_when_parent_lacks_background_task() -> None:
     assert {t.name for t in out} == {"AgentSpawn", "BackgroundTask"}
 
 
-def test_resolve_tools_hot_skips_background_bundle() -> None:
-    """A hot spawn (``bundle_background=False``) must not auto-add BackgroundTask.
-
-    Auto-bundling is exactly the parent/child prompt divergence hot spawning
-    exists to avoid (#361): the child would advertise a tool the parent
-    never had, mutating its rendered system prompt from the first request.
-    """
-    spawn = AgentSpawn()
-    parent = Agent(
-        model=StubProviderModel(responses=[AssistantMessage(text="root")]),
-        tools=[spawn],
-    )
-    out = spawn._resolve_tools(None, parent, bundle_background=False)
-    assert isinstance(out, list)
-    assert {t.name for t in out} == {"AgentSpawn"}
-
-
 def test_build_child_hot_freezes_system_to_parent_snapshot() -> None:
     """``hot=True`` yields a child whose rendered prompt is byte-identical to
-    the parent's -- the fix for #361: a cold child's own tools (e.g. the
-    auto-bundled ``BackgroundTask``) would otherwise diverge it immediately.
+    the parent's -- the fix for #361.
+
+    Deliberately does NOT skip ``BackgroundTask`` auto-bundling here: a hot
+    child still gets it (same as cold), because ``frozen_system`` short-
+    circuits ``_build_system`` before it ever looks at the child's own tool
+    list (see ``Agent._build_system``). Bundling costs nothing on the cache
+    side and keeps the cancel-capability guarantee intact for a hot child
+    that itself has ``AgentSpawn``.
     """
     spawn = AgentSpawn()
     parent = Agent(
@@ -618,8 +607,9 @@ def test_build_child_hot_freezes_system_to_parent_snapshot() -> None:
         system="You are the root agent.",
         tools=[spawn],
     )
-    child_tools = spawn._resolve_tools(None, parent, bundle_background=False)
+    child_tools = spawn._resolve_tools(None, parent)
     assert isinstance(child_tools, list)
+    assert {t.name for t in child_tools} == {"AgentSpawn", "BackgroundTask"}
     child = spawn._build_child(
         system=None,
         child_model=StubProviderModel(),
