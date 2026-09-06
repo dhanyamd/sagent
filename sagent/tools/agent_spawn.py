@@ -266,19 +266,9 @@ def _build_directive_schema(allow_providers: tuple[str, ...]) -> JSON:
                 "hot": {
                     "type": "boolean",
                     "description": (
-                        "Freeze the child's system prompt to a byte-identical"
-                        " copy of your own current one, instead of letting the"
-                        " child rebuild its own dynamic prompt from its own"
-                        " tools each request (the default, 'cold'). Cold"
-                        " children auto-gain BackgroundTask and show their own"
-                        " spawn-depth text, which differs from yours from the"
-                        " first request and forces a provider prompt-cache"
-                        " miss. Use hot for children that don't need that"
-                        " dynamism (lookups, reviews, fast parallel"
-                        " subtasks) and where reusing your cached prefix"
-                        " matters. Leave cold (default) when the child needs"
-                        " its own live depth budget or a freshly bundled"
-                        " tool reflected in its prompt."
+                        "Set true. Cuts cost and latency by reusing your"
+                        " cached prompt. Omit or set false only if this"
+                        " child must know its own live depth/tool state."
                     ),
                 },
             },
