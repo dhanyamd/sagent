@@ -263,6 +263,24 @@ def _build_directive_schema(allow_providers: tuple[str, ...]) -> JSON:
                         " routing). Auto-generated if omitted."
                     ),
                 },
+                "hot": {
+                    "type": "boolean",
+                    "description": (
+                        "Freeze the child's system prompt to a byte-identical"
+                        " copy of your own current one, instead of letting the"
+                        " child rebuild its own dynamic prompt from its own"
+                        " tools each request (the default, 'cold'). Cold"
+                        " children auto-gain BackgroundTask and show their own"
+                        " spawn-depth text, which differs from yours from the"
+                        " first request and forces a provider prompt-cache"
+                        " miss. Use hot for children that don't need that"
+                        " dynamism (lookups, reviews, fast parallel"
+                        " subtasks) and where reusing your cached prefix"
+                        " matters. Leave cold (default) when the child needs"
+                        " its own live depth budget or a freshly bundled"
+                        " tool reflected in its prompt."
+                    ),
+                },
             },
             "required": ["prompt"],
         }
@@ -458,6 +476,7 @@ class AgentSpawn:
             )
         persistent = BoolCodec.coerce(args.get("persistent"), False)
         notify_on_asleep = BoolCodec.coerce(args.get("notify_on_asleep"), True)
+        hot = BoolCodec.coerce(args.get("hot"), False)
         custom_label = opt_str(args, "label")
         parent_agent = _current_agent()
         if parent_agent is None:
@@ -500,7 +519,9 @@ class AgentSpawn:
         if isinstance(resolved, ToolResult):
             return resolved
         child_model, child_spec = resolved
-        child_tools = self._resolve_tools(tools, parent_agent)
+        child_tools = self._resolve_tools(
+            tools, parent_agent, bundle_background=not hot
+        )
         if isinstance(child_tools, ToolResult):
             return child_tools
 
@@ -516,6 +537,7 @@ class AgentSpawn:
             max_rounds=max_rounds,
             model_options=options,
             parent_agent=parent_agent,
+            hot=hot,
         )
 
         parent_path = agent_path_var.get("")
@@ -546,6 +568,7 @@ class AgentSpawn:
         max_rounds: int | None,
         model_options: Mapping[str, object],
         parent_agent: _Agent | None,
+        hot: bool = False,
     ) -> _Agent:
         """Build a child Agent with inherited knobs and explicit options.
 
@@ -553,8 +576,37 @@ class AgentSpawn:
         there rather than passed to the constructor: the child adopts the
         parent's whole selection, then ``model_options`` (already validated
         against ``child_model``) overrides individual axes.
+
+        Args:
+          system: LLM-supplied system-prompt override, or ``None`` to
+              fall through to the factory/parent.
+          child_model: Resolved model backend for the child.
+          child_spec: Resolved model recipe, or ``None`` when the child
+              reuses the parent's raw ``Model`` (no rebuildable spec).
+          child_tools: Resolved tool list for the child.
+          max_rounds: Cap on the child's tool-call rounds, or ``None``.
+          model_options: Provider/model serving knobs already validated
+              against ``child_model``.
+          parent_agent: Spawning agent, for knob fallthrough.
+          hot: Freeze the child's system prompt to a byte-identical
+              snapshot instead of letting it re-derive one from its own
+              tools each request. See ``Agent.__init__``'s ``frozen_system``
+              and #361 for why: a "cold" child's OWN ``AgentSpawn``/
+              ``BackgroundTask`` prompt contributions (spawn-depth text,
+              bundled-tool descriptions) diverge from the parent's from the
+              very first request, which guarantees a provider prefix-cache
+              miss even when the child's task doesn't need that dynamism.
+
         """
         child_system = self._resolve_system(system, parent_agent)
+        if hot and not isinstance(child_system, str):
+            # A factory-level ``self._system`` callable is the only way
+            # ``_resolve_system`` returns non-``str`` here (the LLM-arg and
+            # parent-inherit branches are always ``str``). Hot mode commits to
+            # ONE evaluation up front so ``frozen_system`` has a literal to
+            # freeze -- re-invoking it per request is exactly the liveness hot
+            # mode opts out of.
+            child_system = child_system()
         child_max_rounds = (
             max_rounds if max_rounds is not None else self._max_tool_call_rounds
         )
@@ -565,6 +617,7 @@ class AgentSpawn:
             "tools": child_tools,
             "compactor": self._inherit("compactor", parent_agent),
             "max_tool_call_rounds": child_max_rounds,
+            "frozen_system": hot,
             "session_dir": self._child_session_dir(parent_agent),
         }
         inherited_attempts = self._inherit("max_attempts", parent_agent)
@@ -1051,6 +1104,8 @@ class AgentSpawn:
         self,
         names: list[str] | None,
         parent_agent: _Agent | None,
+        *,
+        bundle_background: bool = True,
     ) -> list[Tool] | ToolResult:
         """Resolve LLM-supplied tool names to tool instances.
 
@@ -1067,6 +1122,18 @@ class AgentSpawn:
         persistent / background work must be able to list, cancel,
         and foreground that work -- decoupling the two is how
         runaway children become uncancellable.
+
+        Args:
+          names: LLM-supplied tool-name whitelist, or ``None`` to inherit.
+          parent_agent: Spawning agent, for the inherit fallthrough.
+          bundle_background: Whether to auto-add ``BackgroundTask`` per the
+              rule above. A hot spawn (see :meth:`run`'s ``hot`` directive)
+              passes ``False``: the whole point of hot mode is a child
+              toolset -- and therefore a rendered system prompt -- that
+              matches the parent's exactly, and auto-adding a tool the
+              parent never advertised is precisely the kind of prefix
+              mutation hot spawning exists to avoid (#361).
+
         """
         available: list[Tool]
         if self._tools is not None:
@@ -1077,17 +1144,18 @@ class AgentSpawn:
             available = []
 
         if names is None:
-            return _bundle_background_task(available)
-
-        by_name = {t.name: t for t in available}
-        missing = [n for n in names if n not in by_name]
-        if missing:
-            return ToolResult(
-                call_id="",
-                content=f"Unknown tools: {missing}. Available: {list(by_name)}",
-                is_error=True,
-            )
-        return _bundle_background_task([by_name[n] for n in names])
+            resolved = available
+        else:
+            by_name = {t.name: t for t in available}
+            missing = [n for n in names if n not in by_name]
+            if missing:
+                return ToolResult(
+                    call_id="",
+                    content=f"Unknown tools: {missing}. Available: {list(by_name)}",
+                    is_error=True,
+                )
+            resolved = [by_name[n] for n in names]
+        return _bundle_background_task(resolved) if bundle_background else resolved
 
     def _child_session_dir(
         self,

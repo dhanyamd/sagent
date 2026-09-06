@@ -27,5 +27,6 @@ Recycle before spawning fresh. Every spawn reloads a full system prompt (expensi
 - `persistent` -- long-running background agent. Drive via `AgentSend`; plain assistant text is invisible unless it `AgentSend`s back or `notify_on_asleep` fires.
 - `notify_on_asleep` (persistent, default true) -- edge-triggered idle ping: `[<label> is idle] <last text>`.
 - `label` -- explicit label; must be unique among live persistent agents.
+- `hot` (default false, i.e. cold) -- freeze the child's system prompt to a byte-identical copy of your own current one instead of letting it rebuild a dynamic prompt from its own tools (which auto-gains `BackgroundTask` and shows its own spawn-depth text -- a guaranteed provider cache miss from the first request). Use hot for children that don't need that dynamism and where reusing your cached prefix matters (lookups, reviews, fast parallel subtasks); leave cold when the child needs its own live depth budget or a freshly bundled tool reflected in its prompt.
 
 Errors (round cap, exceptions, sub-failures) bubble up. Parallel children share per-path file locks; if a file changes under you, a staleness reminder fires -- re-read before editing. Child usage rolls into root `CostLedger`.

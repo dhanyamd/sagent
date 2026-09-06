@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +41,7 @@ from sagent.tools.agent_spawn import (
 from sagent.tools.background_task import BackgroundTask
 from sagent.types.capability import ThinkingEffort
 from sagent.types.model import (
+    Model,
     ModelRecipe,
     ModelRequest,
     ModelResponse,
@@ -62,6 +63,7 @@ from sagent.types.runtime import (
     ToolResult,
     UserMessage,
 )
+from sagent.types.tools import Tool
 
 
 _AGENT_SPAWN_LOGGER = _agent_spawn_mod.__name__
@@ -586,6 +588,150 @@ def test_resolve_tools_bundle_when_parent_lacks_background_task() -> None:
     out = spawn._resolve_tools(["AgentSpawn"], parent)
     assert isinstance(out, list)
     assert {t.name for t in out} == {"AgentSpawn", "BackgroundTask"}
+
+
+def test_resolve_tools_hot_skips_background_bundle() -> None:
+    """A hot spawn (``bundle_background=False``) must not auto-add BackgroundTask.
+
+    Auto-bundling is exactly the parent/child prompt divergence hot spawning
+    exists to avoid (#361): the child would advertise a tool the parent
+    never had, mutating its rendered system prompt from the first request.
+    """
+    spawn = AgentSpawn()
+    parent = Agent(
+        model=StubProviderModel(responses=[AssistantMessage(text="root")]),
+        tools=[spawn],
+    )
+    out = spawn._resolve_tools(None, parent, bundle_background=False)
+    assert isinstance(out, list)
+    assert {t.name for t in out} == {"AgentSpawn"}
+
+
+def test_build_child_hot_freezes_system_to_parent_snapshot() -> None:
+    """``hot=True`` yields a child whose rendered prompt is byte-identical to
+    the parent's -- the fix for #361: a cold child's own tools (e.g. the
+    auto-bundled ``BackgroundTask``) would otherwise diverge it immediately.
+    """
+    spawn = AgentSpawn()
+    parent = Agent(
+        model=StubProviderModel(responses=[AssistantMessage(text="root")]),
+        system="You are the root agent.",
+        tools=[spawn],
+    )
+    child_tools = spawn._resolve_tools(None, parent, bundle_background=False)
+    assert isinstance(child_tools, list)
+    child = spawn._build_child(
+        system=None,
+        child_model=StubProviderModel(),
+        child_spec=None,
+        child_tools=child_tools,
+        max_rounds=None,
+        model_options={},
+        parent_agent=parent,
+        hot=True,
+    )
+    assert child.system == parent.system
+
+
+def test_build_child_cold_diverges_from_parent_via_bundled_tool() -> None:
+    """Regression pin for the DEFAULT (``hot=False``) path: a cold child still
+    gets the auto-bundled ``BackgroundTask``, so it diverges from the
+    parent's prompt right after the shared base -- the #361 failure mode,
+    kept intentionally on cold spawns for backward compatibility.
+    """
+    spawn = AgentSpawn()
+    parent = Agent(
+        model=StubProviderModel(responses=[AssistantMessage(text="root")]),
+        system="You are the root agent.",
+        tools=[spawn],
+    )
+    child_tools = spawn._resolve_tools(None, parent)
+    assert isinstance(child_tools, list)
+    child = spawn._build_child(
+        system=None,
+        child_model=StubProviderModel(),
+        child_spec=None,
+        child_tools=child_tools,
+        max_rounds=None,
+        model_options={},
+        parent_agent=parent,
+        hot=False,
+    )
+    assert child.system != parent.system
+    assert child.system.startswith(parent.system)
+
+
+def test_build_child_hot_materializes_callable_factory_system_once() -> None:
+    """Hot mode commits a callable factory ``system`` to ONE evaluation.
+
+    Re-invoking it per request (the normal, live behavior) would reopen
+    the exact drift hot mode exists to close -- e.g. a factory reading
+    mutable cwd/env state would render differently each time.
+    """
+    calls = 0
+
+    def factory() -> str:
+        nonlocal calls
+        calls += 1
+        return f"call-{calls}"
+
+    spawn = AgentSpawn(system=factory)
+    parent = _make_parent()
+    child = spawn._build_child(
+        system=None,
+        child_model=StubProviderModel(),
+        child_spec=None,
+        child_tools=[],
+        max_rounds=None,
+        model_options={},
+        parent_agent=parent,
+        hot=True,
+    )
+    assert calls == 1
+    assert child.system == "call-1"
+    assert child.system_prompt() == "call-1"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_threads_hot_flag_into_build_child() -> None:
+    """The ``hot`` directive field parses and reaches ``_build_child``."""
+    parent = _make_parent()
+    original = AgentSpawn._build_child
+    captured: dict[str, object] = {}
+
+    def spy(
+        self: AgentSpawn,
+        *,
+        system: str | None,
+        child_model: Model,
+        child_spec: ModelRecipe | None,
+        child_tools: list[Tool],
+        max_rounds: int | None,
+        model_options: Mapping[str, object],
+        parent_agent: Agent | None,
+        hot: bool = False,
+    ) -> Agent:
+        captured["hot"] = hot
+        return original(
+            self,
+            system=system,
+            child_model=child_model,
+            child_spec=child_spec,
+            child_tools=child_tools,
+            max_rounds=max_rounds,
+            model_options=model_options,
+            parent_agent=parent_agent,
+            hot=hot,
+        )
+
+    with (
+        _parent_context(parent),
+        patch.object(AgentSpawn, "_build_child", spy),
+    ):
+        result = await AgentSpawn().run({"prompt": "p", "hot": True})
+    assert captured.get("hot") is True
+    assert not result.is_error
 
 
 def test_resolve_system_llm_wins() -> None:
