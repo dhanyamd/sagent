@@ -1123,18 +1123,17 @@ class AgentSpawn:
             available = []
 
         if names is None:
-            resolved = available
-        else:
-            by_name = {t.name: t for t in available}
-            missing = [n for n in names if n not in by_name]
-            if missing:
-                return ToolResult(
-                    call_id="",
-                    content=f"Unknown tools: {missing}. Available: {list(by_name)}",
-                    is_error=True,
-                )
-            resolved = [by_name[n] for n in names]
-        return _bundle_background_task(resolved)
+            return _bundle_background_task(available)
+
+        by_name = {t.name: t for t in available}
+        missing = [n for n in names if n not in by_name]
+        if missing:
+            return ToolResult(
+                call_id="",
+                content=f"Unknown tools: {missing}. Available: {list(by_name)}",
+                is_error=True,
+            )
+        return _bundle_background_task([by_name[n] for n in names])
 
     def _child_session_dir(
         self,
