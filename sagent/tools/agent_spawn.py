@@ -588,12 +588,6 @@ class AgentSpawn:
         """
         child_system = self._resolve_system(system, parent_agent)
         if hot and not isinstance(child_system, str):
-            # A factory-level ``self._system`` callable is the only way
-            # ``_resolve_system`` returns non-``str`` here (the LLM-arg and
-            # parent-inherit branches are always ``str``). Hot mode commits to
-            # ONE evaluation up front so ``frozen_system`` has a literal to
-            # freeze -- re-invoking it per request is exactly the liveness hot
-            # mode opts out of.
             child_system = child_system()
         child_max_rounds = (
             max_rounds if max_rounds is not None else self._max_tool_call_rounds

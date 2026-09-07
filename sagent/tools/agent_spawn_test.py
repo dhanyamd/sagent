@@ -6,7 +6,7 @@ from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import override
+from typing import cast, override
 from unittest.mock import MagicMock, patch
 
 import asyncio
@@ -1687,6 +1687,79 @@ async def test_persistent_spawn_model_error_reaches_parent_inbox() -> None:
         )
 
         child.shutdown(force=True)
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except (TimeoutError, Exception):  # noqa: BLE001
+            _ = task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_spawn_serviced_hot_child_keeps_frozen_system_after_ipc_augment() -> None:
+    """Persistent spawn (no ``session_root_dir``) mutates ``_system_spec``
+    directly to add the serviced-agent IPC rule. A hot child's frozen
+    prompt must end up as parent-prefix + IPC rule, not silently un-frozen
+    or dropped -- this path is separate from ``_build_child`` and wasn't
+    exercised by the hot/cold tests there.
+    """
+    parent = _make_parent()
+    child = Agent(
+        model=StubProviderModel(responses=[AssistantMessage(text="done")]),
+        name="child",
+        system="You are the root agent.",
+        tools=[],
+        frozen_system=True,
+    )
+    t = AgentSpawn()
+    with _parent_context(parent, label="Root"):
+        result = t._spawn_serviced(
+            child, "hot-persist-1", "do work", notify_on_asleep=False
+        )
+    assert not result.is_error
+    assert child._frozen_system is True
+    assert child.system_prompt() == (
+        "You are the root agent.\n\n"
+        "You are a persistent agent whose output is only known to your"
+        " creator via AgentSend(to='Root', ...). Any other output is"
+        " invisible to the parent and unless you AgentSend them, they will"
+        " be stuck indefinitely."
+    )
+    task = _persistent_tasks.get("hot-persist-1")
+    child.shutdown(force=True)
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except (TimeoutError, Exception):  # noqa: BLE001
+            _ = task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_spawn_serviced_with_session_root_dir_rebuild_keeps_frozen_system(
+    tmp_path: Path,
+) -> None:
+    """The rebuild branch (``session_root_dir`` set) must carry
+    ``frozen_system`` through ``Agent.rebuild`` via its default carry-over
+    (``rebuild`` doesn't receive ``frozen_system`` explicitly here).
+    """
+    parent = _make_parent()
+    child = Agent(
+        model=StubProviderModel(responses=[AssistantMessage(text="done")]),
+        name="child",
+        system="You are the root agent.",
+        tools=[],
+        frozen_system=True,
+    )
+    t = AgentSpawn(session_root_dir=tmp_path)
+    with _parent_context(parent, label="Root"):
+        result = t._spawn_serviced(
+            child, "hot-persist-2", "do work", notify_on_asleep=False
+        )
+    assert not result.is_error
+    rebuilt = cast(Agent, agent_registry["hot-persist-2"])
+    assert rebuilt._frozen_system is True
+    assert rebuilt.system_prompt().startswith("You are the root agent.")
+    task = _persistent_tasks.get("hot-persist-2")
+    rebuilt.shutdown(force=True)
+    if task is not None:
         try:
             await asyncio.wait_for(task, timeout=2.0)
         except (TimeoutError, Exception):  # noqa: BLE001
