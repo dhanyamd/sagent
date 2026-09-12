@@ -33,6 +33,7 @@ from sagent.lib.custom_json import (
     MutableJSON,
     MutableJSONValue,
     json_freeze,
+    json_unfreeze,
 )
 from sagent.types.runtime import ToolResult
 from sagent.types.tools import Tool
@@ -101,6 +102,7 @@ class BackgroundTaskEntry:
     """Whether subagent idle pings are enabled."""
 
     def __post_init__(self) -> None:
+        """Validate the configuration on initialization."""
         if (
             self.kind == "subagent"
             and self.lifecycle == "serviced"
@@ -153,7 +155,7 @@ def bg_augmented_schema(directive_schema: JSON) -> JSON:
           ``properties`` there yields a schema strict validators reject.
 
     """
-    schema: MutableJSON = cast(MutableJSON, dict(directive_schema))
+    schema: MutableJSON = json_unfreeze(directive_schema)
     schema_type = schema.get("type")
     if schema_type is not None and schema_type != "object":
         raise ValueError(
@@ -169,7 +171,7 @@ def bg_augmented_schema(directive_schema: JSON) -> JSON:
         if isinstance(raw_props, Mapping)
         else cast(MutableJSON, {})
     )
-    props.update(cast(MutableJSON, dict(_BG_FIELDS)))
+    props.update(json_unfreeze(_BG_FIELDS))
     schema["properties"] = cast(MutableJSONValue, props)
     return json_freeze(schema)
 

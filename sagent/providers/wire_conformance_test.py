@@ -34,6 +34,7 @@ from sagent.providers.minimax.api import MiniMax
 from sagent.providers.moonshot.api import Moonshot
 from sagent.providers.openai.api import OpenAI
 from sagent.providers.openai.compat import OpenAICompatModel
+from sagent.providers.openai.responses import _OpenAIResponsesModel
 from sagent.types.capability import (
     ContextTag,
     ModelCapability,
@@ -74,7 +75,7 @@ class _CatalogProvider(Protocol):
 
 
 def _request() -> ModelRequest:
-    """The smallest request that carries a thinking knob to the wire."""
+    """Return the smallest request that carries a thinking knob to the wire."""
     return ModelRequest(messages=[UserMessage(text="x")])
 
 
@@ -93,6 +94,12 @@ def _google_thinking(model: Model, settings: ModelSettings) -> object:
     gen_config = body["generationConfig"]
     assert isinstance(gen_config, dict)
     return gen_config.get("thinkingConfig")
+
+
+def _responses_thinking(model: Model, settings: ModelSettings) -> object:
+    assert isinstance(model, _OpenAIResponsesModel)
+    model._settings = settings
+    return model._build_kwargs(_request()).get("reasoning")
 
 
 def _chat_thinking(model: Model, settings: ModelSettings) -> object:
@@ -117,7 +124,7 @@ _WireBuilder = tuple[
 _WIRE_BUILDERS: Mapping[str, _WireBuilder] = {
     "Anthropic": (lambda: Anthropic.from_key("k"), _anthropic_thinking),
     "Google": (lambda: Google.from_key("k"), _google_thinking),
-    "OpenAI": (lambda: OpenAI.from_key("k"), _chat_thinking),
+    "OpenAI": (lambda: OpenAI.from_key("k"), _responses_thinking),
     "DashScope": (lambda: DashScope.from_key("k"), _chat_thinking),
     "MiniMax": (lambda: MiniMax.from_key("k"), _chat_thinking),
     "Moonshot": (lambda: Moonshot.from_key("k"), _chat_thinking),
@@ -137,7 +144,7 @@ _ROWS = _rows()
 
 
 def _settings_for(capability: ModelCapability, effort: ThinkingEffort) -> ModelSettings:
-    """The settings that ask for ``effort`` with the widest budget offered."""
+    """Return the settings that ask for ``effort`` with the widest budget offered."""
     budgets: tuple[ThinkingBudget, ...] = ("fixed", "auto", "none")
     budget: ThinkingBudget = next(b for b in budgets if b in capability.thinking_budget)
     output: ThinkingOutput = "text" if "text" in capability.thinking_output else "none"

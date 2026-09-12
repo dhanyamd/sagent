@@ -132,8 +132,8 @@ def _resp(text: str = "ok") -> ModelResponse:
     return ModelResponse(message=AssistantMessage(text=text))
 
 
-def _silent(_arg: object) -> None:
-    return None
+def _silent(arg: object) -> None:
+    del arg
 
 
 def _collect_text(chunks: list[str]) -> Callable[[RuntimeEvent], None]:
@@ -1620,8 +1620,8 @@ async def test_send_with_retry_does_not_emit_banner_into_on_text(
     chunks: list[str] = []
     suspensions: list[float] = []
 
-    async def fake_sleep(_d: float) -> None:
-        return None
+    async def fake_sleep(d: float) -> None:
+        del d
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
@@ -1663,8 +1663,8 @@ async def test_send_with_retry_silent_on_short_transient_retry(
     suspensions: list[float] = []
     notes: list[str] = []
 
-    async def fake_sleep(_d: float) -> None:
-        return None
+    async def fake_sleep(d: float) -> None:
+        del d
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
@@ -1724,12 +1724,6 @@ def test_one_body_reader_symbol() -> None:
     assert not hasattr(retry, "_response_body_excerpt"), (
         "_response_body_excerpt duplicated _response_body_text verbatim"
     )
-
-
-if __name__ == "__main__":
-    from sagent.lib.testing.main import test_main
-
-    test_main(__file__)
 
 
 class _EntitlementError(Exception):
@@ -1817,3 +1811,9 @@ def test_exhausted_quota_messages_are_fatal(message: str) -> None:
         }
 
     assert is_rate_limited(_ExhaustedError()) is False
+
+
+if __name__ == "__main__":
+    from sagent.lib.testing.main import test_main
+
+    test_main(__file__)

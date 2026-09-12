@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import cast
 
@@ -10,14 +11,20 @@ import logging
 import httpx2
 import pytest
 
-from sagent.lib.custom_json import MutableJSON, MutableJSONValue
+from sagent.lib.custom_json import JSON, MutableJSON, MutableJSONValue
 from sagent.providers.google.api import (
     Google,
     _build_request,
     _build_response,
     _strip_additional_properties,
 )
-from sagent.types.capability import ModelCapability, ModelSettings
+from sagent.types.capability import (
+    ModelCapability,
+    ModelSettings,
+    ThinkingBudget,
+    ThinkingEffort,
+    ThinkingOutput,
+)
 from sagent.types.cost import (
     PriceCatalog,
     PriceCatalogProduct,
@@ -39,7 +46,6 @@ from sagent.types.runtime import (
     ToolResult,
     UserMessage,
 )
-from sagent.types.tools import Tool
 
 
 def test_strip_additional_properties_removes_top_level_key() -> None:
@@ -85,18 +91,28 @@ def _make_request(messages: list[ModelContextEvent], **kw: object) -> ModelReque
 
 
 def _thinking_capability() -> ModelCapability:
-    """The catalog row every wire test builds against."""
+    """Return the catalog row every wire test builds against."""
     return Google.from_key("k").model("gemini-2.5-pro").capability
 
 
-def _settings(**choices: object) -> ModelSettings:
-    """Settings bound to the thinking-capable row.
+def _settings(
+    *,
+    thinking_effort: ThinkingEffort = "none",
+    thinking_budget: ThinkingBudget = "none",
+    thinking_output: ThinkingOutput = "none",
+) -> ModelSettings:
+    """Return settings bound to the thinking-capable row.
 
     Bound rather than bare: every axis validates on assignment, so a
     default-capability object cannot hold the thinking selections these
     tests are about.
     """
-    return ModelSettings(capability=_thinking_capability(), **choices)  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- kwargs forwarded to the dataclass
+    return ModelSettings(
+        capability=_thinking_capability(),
+        thinking_effort=thinking_effort,
+        thinking_budget=thinking_budget,
+        thinking_output=thinking_output,
+    )
 
 
 def _wire(request: ModelRequest, settings: ModelSettings | None = None) -> MutableJSON:
@@ -207,7 +223,8 @@ async def test_google_stream_parses_text_tool_call_and_finish_reason() -> None:
         b'"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}\n\n'
     )
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -245,7 +262,8 @@ async def test_google_stream_routes_thought_parts_to_thinking() -> None:
         if isinstance(ev, ModelResponseThinking):
             thinking_chunks.append(ev.text)
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -276,7 +294,8 @@ async def test_google_stream_logs_and_skips_malformed_json_chunk(
         b'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n'
     )
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -300,7 +319,8 @@ async def test_google_stream_logs_and_skips_malformed_json_chunk(
 async def test_google_stream_eof_without_finish_reason_raises_interrupted() -> None:
     sse_body = b'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}\n\n'
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -320,7 +340,8 @@ async def test_google_stream_eof_without_finish_reason_raises_interrupted() -> N
 async def test_google_stream_raises_when_all_json_chunks_are_malformed() -> None:
     sse_body = b"data: {not-json}\n\ndata: also-not-json\n\n"
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -343,7 +364,8 @@ async def test_google_stream_max_tokens_finish_reason() -> None:
         b'"finishReason":"MAX_TOKENS"}]}\n\n'
     )
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -371,17 +393,15 @@ def test_google_build_response_cache_tokens_split_input_cost() -> None:
             }
         ),
     )
+    usage: MutableJSON = {
+        "promptTokenCount": 1000,
+        "candidatesTokenCount": 100,
+        "cachedContentTokenCount": 300,
+    }
     resp = _build_response(
         text="",
         tool_calls=[],
-        usage=cast(
-            MutableJSON,
-            {
-                "promptTokenCount": 1000,
-                "candidatesTokenCount": 100,
-                "cachedContentTokenCount": 300,
-            },
-        ),
+        usage=usage,
         finish_reason="STOP",
         model=model,
     )
@@ -580,7 +600,8 @@ async def test_google_stream_413_token_body_raises_prompt_too_long() -> None:
     window helps) rather than routing to byte-overflow recovery.
     """
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(413, text="Input too large for model context.")
 
     transport = httpx2.MockTransport(handle)
@@ -599,7 +620,8 @@ async def test_google_stream_413_byte_body_raises_request_too_large() -> None:
     byte-overflow recovery (shed attachment bytes), not token-overflow.
     """
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(413, text="Request entity too large.")
 
     transport = httpx2.MockTransport(handle)
@@ -614,7 +636,8 @@ async def test_google_stream_413_byte_body_raises_request_too_large() -> None:
 async def test_google_stream_400_exceeds_maximum_normalizes() -> None:
     """The ``exceeds the maximum`` substring is the canonical Gemini overflow phrase."""
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             400, text="The input token count exceeds the maximum allowed."
         )
@@ -651,7 +674,8 @@ async def test_google_stream_500_with_overflow_keyword_is_http_error_not_overflo
 ):
     """Stream 5xx with overflow keywords propagates as HTTPStatusError."""
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(500, text="internal error: too long traceback")
 
     transport = httpx2.MockTransport(handle)
@@ -684,7 +708,8 @@ async def test_google_actual_request_tokens_hits_count_tokens_endpoint() -> None
 
 @pytest.mark.asyncio
 async def test_google_stream_400_other_raises_value_error() -> None:
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(400, text="malformed request body")
 
     transport = httpx2.MockTransport(handle)
@@ -699,10 +724,26 @@ class _StubTool:
     name: str = "Echo"
     tool_id: str = "application/x-tool-echo"
     description: str = "Echo"
-    directive_schema: dict[str, object] = {  # noqa: RUF012 -- test stub
+    directive_schema: JSON = {  # noqa: RUF012 -- test stub
         "type": "object",
         "additionalProperties": False,
     }
+    clearable_results: bool = False
+
+    def summary(self, args: Mapping[str, object]) -> str:
+        del args
+        return ""
+
+    def prompt(self) -> str | None:
+        return None
+
+    def serialize_key(self, args: Mapping[str, object]) -> str | None:
+        del args
+        return None
+
+    async def run(self, args: Mapping[str, object]) -> ToolResult:
+        del args
+        return ToolResult(call_id="", content="")
 
 
 def test_build_request_tools_strip_additional_properties() -> None:
@@ -710,7 +751,7 @@ def test_build_request_tools_strip_additional_properties() -> None:
     tool = _StubTool()
     req = ModelRequest(
         messages=[UserMessage(text="hi")],
-        tools=cast(list[Tool], [tool]),
+        tools=[tool],
     )
     body = _wire(req)
     tools_section = cast(list[MutableJSON], body["tools"])

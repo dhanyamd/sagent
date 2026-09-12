@@ -23,9 +23,9 @@ model id is injected, so it runs on Gemini or Anthropic unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final
 
 import asyncio
 import re
@@ -73,6 +73,7 @@ SYS_BASE: Final = (
 
 
 def system_for(*, allow_upgrade: bool, strong_model: str = "") -> str:
+    """Build the system prompt with optional self-upgrade capability."""
     if allow_upgrade:
         # MODEL-AGNOSTIC self-upgrade block (variant B empowerment + fresh-eyes
         # ownership). Only ``strong_model`` is injected — no model-specific or
@@ -166,17 +167,21 @@ class RunPython:
     )
 
     def summary(self, args: Mapping[str, object]) -> str:
+        """Return a short summary of the tool invocation."""
         del args
         return "run_python"
 
     def prompt(self) -> str:
+        """Return the tool prompt for the agent."""
         return ""
 
     def serialize_key(self, args: Mapping[str, object]) -> str | None:
+        """Return a serialization key for caching (None = not cacheable)."""
         del args
         return "run_python"
 
     async def run(self, args: Mapping[str, object]) -> ToolResult:
+        """Execute the Python script in a sandboxed subprocess."""
         code = str(args.get("code", ""))
         if _DANGER.search(code):
             return ToolResult(
@@ -189,6 +194,7 @@ class RunPython:
         return ToolResult(call_id="", content=out[:6000])
 
     def _exec(self, code: str) -> str:
+        """Execute the code and return stdout/stderr output."""
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
             fh.write(_ORACLE_SRC + "\n" + code)
             path = fh.name
@@ -252,10 +258,10 @@ def _build_timeline(
     return steps
 
 
-def _final_text(history: list[Any]) -> str:
+def _final_text(history: Sequence[object]) -> str:
     for m in reversed(history):
         if isinstance(m, AssistantMessage) and m.text:
-            return cast(str, m.text.strip())  # pyright: ignore[reportUnnecessaryCast] -- ty needs the cast; pyright resolves the type
+            return m.text.strip()
     return ""
 
 

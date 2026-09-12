@@ -23,7 +23,7 @@ from sagent.tools.agent_spawn import _persistent_tasks
 
 # In the OSS export the flattened top-level ``sagent/types`` masks stdlib
 # ``types``, crashing xdist workers.
-os.environ.setdefault("PYTHONSAFEPATH", "1")
+os.environ["PYTHONSAFEPATH"] = "1"
 
 
 __all__ = ["isolate_user_dirs", "pytest_collection_modifyitems"]
@@ -45,7 +45,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_default_tool_state() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] -- pytest fixture used via decorator
+def isolate_default_tool_state() -> Iterator[None]:
     """Reset the fallback ``ToolState`` to a fresh instance per test.
 
     ``get_tool_state()`` returns the module-level fallback when no
@@ -58,7 +58,7 @@ def _isolate_default_tool_state() -> Iterator[None]:  # pyright: ignore[reportUn
 
 
 @pytest.fixture(autouse=True)
-def _isolate_agent_registry() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] -- pytest fixture used via decorator
+def isolate_agent_registry() -> Iterator[None]:
     """Snapshot and restore the process-global agent registries per test.
 
     ``agent_registry`` and ``_persistent_tasks`` are module-level dicts that

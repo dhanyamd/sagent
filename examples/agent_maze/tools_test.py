@@ -15,13 +15,14 @@ from examples.agent_maze.engine import Engine
 from examples.agent_maze.tools import CommsTool, SpawnTool
 from examples.agent_maze.world import make_spawn_level
 from sagent.agent.state import agent_label_var, agent_registry
+from sagent.types.runtime import ToolResult
 
 
 class _Inbox:
     def __init__(self) -> None:
-        self.msgs: list[Any] = []
+        self.msgs: list[object] = []
 
-    def push_back(self, m: Any) -> None:
+    def push_back(self, m: object) -> None:
         self.msgs.append(m)
 
 
@@ -52,7 +53,7 @@ def _clear(labels: list[str]) -> None:
         agent_registry.pop(lbl, None)
 
 
-def _run(coro: Coroutine[Any, Any, Any]) -> Any:
+def _run(coro: Coroutine[Any, Any, ToolResult]) -> ToolResult:
     return asyncio.run(coro)
 
 
@@ -175,7 +176,8 @@ def test_spawn_blocked_at_capacity() -> None:
     eng.add_agent("a0", (7, 1))
     tok = agent_label_var.set("a0")
 
-    def fake(_parent: str, _xy: tuple[int, int]) -> str:
+    def fake(parent: str, xy: tuple[int, int]) -> str:
+        del parent, xy
         return "a1"
 
     try:
@@ -186,3 +188,9 @@ def test_spawn_blocked_at_capacity() -> None:
     finally:
         agent_label_var.reset(tok)
         _clear(["a0"])
+
+
+if __name__ == "__main__":
+    from sagent.lib.testing.main import test_main
+
+    test_main(__file__)

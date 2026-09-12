@@ -39,6 +39,7 @@ class ToolResultPolicy:
     """Aggregate live tool-result budget for one request; ``0`` disables."""
 
     def __post_init__(self) -> None:
+        """Validate policy parameters."""
         if self.persist_tokens < 0:
             raise ValueError(f"persist_tokens must be >= 0, got {self.persist_tokens}")
         if self.message_budget_tokens < 0:
@@ -62,6 +63,25 @@ class ToolResultPolicy:
             persist_tokens=window // 4,
             message_budget_tokens=window // 2,
         )
+
+
+class ToolResultClearable(Protocol):
+    """What a provider reads to decide whose RESULTS its server may drop.
+
+    Narrower than ``Tool`` on purpose: deciding which tool results the server
+    may clear needs a name and that one flag, not the ten members the agent
+    runtime consumes.
+    """
+
+    @property
+    def name(self) -> str:
+        """Human-readable tool name, e.g. ``"Bash"``."""
+        ...
+
+    @property
+    def clearable_results(self) -> bool:
+        """Whether server-side context management may drop this tool's results."""
+        ...
 
 
 @runtime_checkable

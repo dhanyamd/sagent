@@ -43,7 +43,7 @@ from sagent.providers import (
 from sagent.types.model import ModelRecipe
 
 
-HERE = Path(__file__).parent
+_CWD: Final = Path(__file__).resolve().parent
 
 # Each config names the (provider, model_id) for the cheap and strong tiers. The
 # prompt is model-agnostic; only these change. "cross" is the headline: a Google
@@ -108,6 +108,7 @@ def build(provider_name: str, model_id: str):
 
 
 def canonical_histograms() -> dict[str, Any]:
+    """Generate canonical histograms for visualization of sampler behavior."""
     # Canonical biased/fixed sampler histograms for the viz (illustrative — the
     # same bias the agent hits). Run in a subprocess so numpy/scipy need not be
     # in this env.
@@ -179,6 +180,7 @@ def _slim(s: dict[str, Any]) -> dict[str, Any]:
 
 
 async def run_live(config_name: str, trials: int) -> dict[str, Any]:
+    """Run the self-escalating solver experiment and capture results."""
     cfg = CONFIGS[config_name]
     cheap_prov, cheap_id = cfg["cheap"]
     high_prov, high_id = cfg["high"]  # expensive baseline (high-tier panel)
@@ -300,7 +302,7 @@ async def run_live(config_name: str, trials: int) -> dict[str, Any]:
         "self_mutate_trials": [_slim(s) for s in self_runs],
         "hist": hist,
     }
-    out = HERE / "web" / "data.js"
+    out = _CWD / "web" / "data.js"
     out.parent.mkdir(exist_ok=True)
     out.write_text("window.DEMO = " + json.dumps(data) + ";\n", encoding="utf-8")
 
@@ -324,7 +326,7 @@ def serve(port: int = 8000, host: str = "127.0.0.1") -> None:
     Binds a FIXED port (default 8000) so an SSH tunnel can be set up ahead of
     time. ``--host 0.0.0.0`` exposes it on the LAN instead (less secure).
     """
-    web = HERE / "web"
+    web = _CWD / "web"
     handler = functools.partial(
         http.server.SimpleHTTPRequestHandler, directory=str(web)
     )
@@ -370,6 +372,7 @@ def _pick_provider() -> str:
 
 
 def main() -> None:
+    """Run the solver demo with replay or live experiment."""
     ap = argparse.ArgumentParser(
         description="Default: replay the captured run in a local webpage. "
         "--live re-runs it for real, then serves the fresh result."
@@ -397,12 +400,12 @@ def main() -> None:
         provider = args.provider or _pick_provider()
         asyncio.run(run_live(provider, args.trials))
 
-    data_js = HERE / "web" / "data.js"
+    data_js = _CWD / "web" / "data.js"
     if not data_js.exists():
         print("no web/data.js yet — run with --live to capture one.")
         return
     if args.no_serve:
-        print(f"open {HERE / 'web' / 'index.html'} in a browser to view the report.")
+        print(f"open {_CWD / 'web' / 'index.html'} in a browser to view the report.")
         return
     serve(args.port, args.host)
 

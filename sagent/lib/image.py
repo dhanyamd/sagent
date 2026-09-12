@@ -1,14 +1,14 @@
-"""Image utilities — decoders (bytes → numpy), dimension probe, resize.
+"""Image utilities -- decoders (bytes → numpy), dimension probe, resize.
 
 Numpy-only. Tensor-returning decoders can wrap these helpers where needed.
 
 Three audiences:
 
-1. **Decoders** — ``decode_jpeg_turbojpeg``, ``decode_webp_libwebp``,
+1. **Decoders** -- ``decode_jpeg_turbojpeg``, ``decode_webp_libwebp``,
    ``decode_image_pil``: bytes → ``np.ndarray[uint8] (H, W, C)`` RGB.
-2. **Probes** — ``get_mime``, ``get_dimensions``: inspect bytes
+2. **Probes** -- ``get_mime``, ``get_dimensions``: inspect bytes
    without decoding pixels.
-3. **Re-encoder** — ``resize``: bytes → bytes, shrink if above a
+3. **Re-encoder** -- ``resize``: bytes → bytes, shrink if above a
    pixel or byte cap. For API upload.
 """
 
@@ -46,7 +46,15 @@ __all__ = [
 
 
 def get_mime(data: bytes) -> str | None:
-    """Detect image MIME type from bytes. Returns None if unrecognized."""
+    """Detect image MIME type from bytes. Returns None if unrecognized.
+
+    Args:
+      data: Raw image bytes to identify.
+
+    Returns:
+      result: MIME type string (e.g., "image/jpeg"), or None if not recognized.
+
+    """
     try:
         img = Image.open(BytesIO(data))
     except (Image.UnidentifiedImageError, OSError):
@@ -61,8 +69,11 @@ def get_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
     header fields (JPEG SOF, PNG IHDR, WebP RIFF, GIF logical screen,
     TIFF IFD, SVG viewBox) without pixel decode.
 
+    Args:
+      image_bytes: Raw image bytes to measure.
+
     Returns:
-      dimensions: (height, width) or None if unsupported/malformed.
+      dimensions: (width, height) tuple, or None if format unsupported/malformed.
 
     """
     w, h = imagesize.get(BytesIO(image_bytes))
@@ -136,7 +147,7 @@ def decode_webp_libwebp(
         crop_coords = _parse_crop(crop, int(height), int(width))
 
         # New-style webp bindings: lib functions take a cffi pointer to
-        # the config struct. Cast to Any throughout — the cffi-typed
+        # the config struct. Cast to Any throughout -- the cffi-typed
         # struct members are opaque to static type checkers. The current
         # bindings also don't expose crop options on WebPDecoderOptions,
         # so we decode full and slice below.
@@ -157,7 +168,7 @@ def decode_webp_libwebp(
         rgba = config.output.u.RGBA
         output_buffer = cast(bytes, ffi.buffer(rgba.rgba, rgba.size))
 
-        # Copy before WebPFreeDecBuffer — output_buffer points into the
+        # Copy before WebPFreeDecBuffer -- output_buffer points into the
         # libwebp-owned memory that we're about to release.
         rgb = (
             np.frombuffer(output_buffer, dtype=np.uint8)
@@ -219,7 +230,7 @@ def decode_image_pil(
             _, _, crop_w, crop_h = crop_coords
             image.draft("RGB", (crop_w * 2, crop_h * 2))
 
-        image.load()  # pyright: ignore[reportUnknownMemberType]
+        image.load()  # pyright: ignore[reportUnknownMemberType] -- PIL's `core` is rebound to `DeferredError.new() -> Any` in its ImportError fallback, so `load`'s `core.PixelAccess | None` return resolves to Unknown
 
         if channels_format == "rgb":
             if image.mode == "RGBA":
@@ -242,8 +253,8 @@ def decode_image_pil(
             h = int(crop_h * scale_h)
             image = image.crop((left, top, left + w, top + h))
 
-        # Direct uint8 extraction — no float32 round-trip. np.array (not
-        # asarray) copies so the resulting ndarray is writable — torch
+        # Direct uint8 extraction -- no float32 round-trip. np.array (not
+        # asarray) copies so the resulting ndarray is writable -- torch
         # warns on non-writable arrays, and PIL's buffer is read-only.
         return np.array(image, dtype=np.uint8)
 
@@ -352,20 +363,7 @@ def _parse_crop(
     height: int,
     width: int,
 ) -> tuple[int, int, int, int] | None:
-    """Parse crop parameter and return crop coordinates.
-
-    Args:
-      crop: Crop specification:
-        - None: no crop
-        - (crop_height, crop_width): center crop to match aspect ratio
-        - (y, x, h, w): direct crop coordinates
-      height: Original image height.
-      width: Original image width.
-
-    Returns:
-      coords: (crop_x, crop_y, crop_width, crop_height) or None.
-
-    """
+    """Parse crop parameter and return crop coordinates."""
     match crop:
         case None:
             return None

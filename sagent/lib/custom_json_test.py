@@ -1056,23 +1056,31 @@ class _SpecialUnions:
 
 class TestDataclassCodec:
     def test_generated_classes_are_collectible(self) -> None:
-        cls = dataclasses.make_dataclass(
-            "Ephemeral",
-            [("value", int)],
-            frozen=True,
-            slots=True,
-            kw_only=True,
-        )
-        instance = cls(value=1)
-        assert (
-            DataclassCodec.from_json(cls, DataclassCodec.to_json(instance)) == instance
-        )
-        class_ref = weakref.ref(cls)
+        gc_enabled = gc.isenabled()
+        # Keep the ephemeral class young so collection never scans the whole heap.
+        gc.disable()
+        try:
+            cls = dataclasses.make_dataclass(
+                "Ephemeral",
+                [("value", int)],
+                frozen=True,
+                slots=True,
+                kw_only=True,
+            )
+            instance = cls(value=1)
+            assert (
+                DataclassCodec.from_json(cls, DataclassCodec.to_json(instance))
+                == instance
+            )
+            class_ref = weakref.ref(cls)
 
-        del instance, cls
-        gc.collect()
+            del instance, cls
+            gc.collect(0)
 
-        assert class_ref() is None
+            assert class_ref() is None
+        finally:
+            if gc_enabled:
+                gc.enable()
 
     def test_scalars_and_specials_round_trip(self) -> None:
         doc = _Doc(
@@ -1113,7 +1121,7 @@ class TestDataclassCodec:
 
     def test_encoded_form_is_json_serializable(self) -> None:
         doc = _Doc(when=datetime(2026, 1, 1, tzinfo=UTC), atts=(_Bytes(data=b"z"),))
-        json.dumps(DataclassCodec.to_json(doc))  # must not raise
+        json.dumps(DataclassCodec.to_json(doc))  # must not raise.
 
     def test_type_tag_present_and_ignored_on_decode(self) -> None:
         encoded = DataclassCodec.to_json(_Child(n=3))
@@ -1452,10 +1460,10 @@ class TestStrictEncode:
     @pytest.mark.parametrize(
         "doc",
         [
-            _StrictAnnotations(count=cast(int, "one")),
-            _StrictAnnotations(pair=cast(tuple[int, str], (1,))),
-            _StrictAnnotations(numbers=cast(list[int], ["one"])),
-            _StrictAnnotations(table=cast(dict[str, int], {"x": "one"})),
+            _StrictAnnotations(count="one"),  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the codec rejects a mistyped field
+            _StrictAnnotations(pair=(1,)),  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the codec rejects a mistyped field
+            _StrictAnnotations(numbers=["one"]),  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the codec rejects a mistyped field
+            _StrictAnnotations(table={"x": "one"}),  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the codec rejects a mistyped field
         ],
     )
     def test_rejects_values_that_do_not_match_annotations(
@@ -1465,7 +1473,7 @@ class TestStrictEncode:
             DataclassCodec.to_json(doc)
 
     def test_concrete_frozenset_rejects_set_value(self) -> None:
-        doc = _FrozenSetHolder(value=cast(frozenset[int], {1}))
+        doc = _FrozenSetHolder(value={1})  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the codec rejects a set where frozenset is declared
         with pytest.raises(TypeError):
             DataclassCodec.to_json(doc)
 
@@ -1743,9 +1751,8 @@ class TestNonStrMappingKeys:
     """
 
     def test_a_non_str_key_is_refused(self) -> None:
-        table = cast(Mapping[str, str], {1: "a"})
         with pytest.raises(TypeError):
-            DataclassCodec.to_json(_Keyed(table=table))
+            DataclassCodec.to_json(_Keyed(table={1: "a"}))  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves the encoder refuses a non-str mapping key
 
     def test_str_keys_still_round_trip(self) -> None:
         doc = _Keyed(table={"k": "v"})
@@ -1801,23 +1808,16 @@ class _Carrier(Protocol):
     value: object
 
 
+# Generating the carrier rather than declaring it is the point: the field's annotation
+# is the codec's entire schema, so a generated annotation tests a shape no hand-written
+# fixture covers.
+#
+# The carrier is built ONCE and compared against itself. Two ``make_dataclass`` calls
+# yield distinct classes, and a dataclass ``__eq__`` returns ``NotImplemented`` for a
+# foreign class, so a second carrier would make every comparison false regardless of
+# what the codec did.
 def _assert_round_trips(annotation: object, value: object) -> None:
-    """Assert a one-field dataclass survives encode then decode.
-
-    Generating the carrier rather than declaring it is the point: the field's
-    annotation is the codec's entire schema, so a generated annotation tests a
-    shape no hand-written fixture covers.
-
-    The carrier is built ONCE and compared against itself. Two ``make_dataclass``
-    calls yield distinct classes, and a dataclass ``__eq__`` returns
-    ``NotImplemented`` for a foreign class, so a second carrier would make every
-    comparison false regardless of what the codec did.
-
-    Args:
-      annotation: The field's declared type, as a runtime value.
-      value: The value to store, encode, and decode back.
-
-    """
+    """Assert a one-field dataclass survives encode then decode."""
     cls = dataclasses.make_dataclass(
         "_Generated",
         [("value", annotation)],
@@ -2747,16 +2747,12 @@ class TestIssue19672Contracts:
         assert decode_graph(encode_graph(reserved)) == reserved
 
     def test_plain_residual_rejects_runtime_non_string_keys(self) -> None:
-        source = cast(Mapping[str, object], {1: "value"})
-
         with pytest.raises(TypeError, match="key"):
-            residual(source)
+            residual({1: "value"})  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves residual refuses a non-str key
 
     def test_stateful_residual_rejects_runtime_non_string_keys(self) -> None:
-        source = cast(Mapping[str, object], {1: "value"})
-
         with pytest.raises(TypeError, match="key"):
-            residual(source, fields={})
+            residual({1: "value"}, fields={})  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: proves residual refuses a non-str key
 
     def test_plain_residual_escape_preserves_numeric_spelling(self) -> None:
         source = {

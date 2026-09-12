@@ -23,6 +23,7 @@ class Absent:
     _instance: ClassVar[Self | None] = None
 
     def __new__(cls) -> Self:
+        """Create the singleton."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
@@ -32,6 +33,7 @@ class Absent:
         return "ABSENT"
 
     def __bool__(self) -> bool:
+        """Return False as a falsy sentinel."""
         return False
 
     @override

@@ -21,7 +21,7 @@ from sagent.prompt import (
 
 
 @pytest.fixture(autouse=True)
-def _stub_recipe_and_helpers() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] -- pytest fixture consumed by name
+def stub_recipe_and_helpers() -> Iterator[None]:
     """Replace recipe + AGENTS.md + memory hooks with deterministic stubs.
 
     Without this, ``prompt.build_system`` reads filesystem assets and
@@ -41,7 +41,8 @@ def _stub_recipe_and_helpers() -> Iterator[None]:  # pyright: ignore[reportUnuse
             return sections
         return {}
 
-    def fake_recipe_list(_section: str, _key: str) -> list[str]:
+    def fake_recipe_list(section: str, key: str) -> list[str]:
+        del section, key
         return []
 
     def fake_read_asset(path: object) -> str:
@@ -286,7 +287,8 @@ def test_include_memory_vs_recipe_sections(
 ) -> None:
     """`include_memory` is an AND-gate with the recipe ``sections`` list."""
 
-    def fake_recipe_list(_section: str, _key: str) -> list[str]:
+    def fake_recipe_list(section: str, key: str) -> list[str]:
+        del section, key
         return sections or []
 
     monkeypatch.setattr("sagent.prompt.recipe_list", fake_recipe_list)

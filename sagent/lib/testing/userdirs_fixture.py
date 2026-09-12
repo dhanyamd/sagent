@@ -41,6 +41,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import tempfile
+
 import pytest
 
 
@@ -102,6 +104,11 @@ def isolate_user_dirs(
     ``Path.home() / ".local/state/..."`` to dodge the fixture, reintroducing
     exactly the per-platform layout ``userdirs`` exists to delete.
 
+    Args:
+      request: Pytest request; checked for real_user_dirs marker.
+      tmp_path_factory: Factory for creating per-test tmp directories.
+      monkeypatch: Fixture for temporary environment modifications.
+
     Returns:
       root: The tmp directory the four XDG variables point at, or ``None``
         when the test opted out. Assertions normally do not need it; call the
@@ -119,13 +126,12 @@ def isolate_user_dirs(
     # atomic write left no temp file behind, and a ``userdirs`` entry appearing
     # there fails 15 of them (``temp file leaked: ['userdirs']``). The XDG root
     # must be invisible to the directory under test.
-    root = tmp_path_factory.mktemp("userdirs")
-    assert isinstance(root, Path)
-    for variable, leaf in (
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_STATE_HOME", "state"),
-    ):
+    # Keep these roots out of numbered allocation's per-test sibling scans.
+    parent = tmp_path_factory.getbasetemp() / "userdirs"
+    parent.mkdir(mode=0o700, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="isolate-", dir=parent))
+    # This IS the fixture that repoints userdirs, so it spells the variables.
+    for leaf in ("config", "data", "cache", "state"):
+        variable = f"XDG_{leaf.upper()}_HOME"  # house-lint: ignore[xdg-literal]
         monkeypatch.setenv(variable, str(root / leaf))
     return root

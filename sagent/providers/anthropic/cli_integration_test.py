@@ -57,7 +57,7 @@ def _claude_available() -> bool:
     status = _claude_auth_status(binary)
     if status is not None:
         return status
-    creds = credentials_path(Path.home() / ".claude" / ".credentials.json", None)
+    creds = credentials_path(Path.home() / ".claude" / ".credentials.json", None)  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)
     return creds.exists()
 
 
@@ -162,7 +162,7 @@ _auth_probe_cache: list[str | None] = [None]
 
 
 @pytest.fixture(autouse=True)
-def _require_live_claude_auth() -> None:  # pyright: ignore[reportUnusedFunction] -- pytest fixture used via decorator
+def require_live_claude_auth() -> None:
     """Skip every live test fast when the CLI's token is expired/refreshing.
 
     Probes once per session (the result is cached) so a transient auth window

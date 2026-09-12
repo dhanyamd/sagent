@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from anthropic._models import FinalRequestOptions
     from anthropic._streaming import AsyncStream
     from anthropic.lib.streaming import AsyncMessageStream
+    from anthropic.types.raw_message_stream_event import RawMessageStreamEvent
 
     import anthropic
 
@@ -52,7 +53,6 @@ else:
     AsyncStream = lazy_import("anthropic._streaming", "AsyncStream")
     image_lib = lazy_import("sagent.lib.image")
 
-from anthropic.types.raw_message_stream_event import RawMessageStreamEvent
 
 from sagent.catalog import anthropic as anthropic_catalog
 from sagent.lib import debug_log
@@ -95,7 +95,7 @@ from sagent.types.runtime import (
     ToolResult,
     UserMessage,
 )
-from sagent.types.tools import Tool
+from sagent.types.tools import Tool, ToolResultClearable
 
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,7 @@ _CONTEXT_MANAGEMENT_MODELS = frozenset(
 
 
 def supports_native_context_management(model_id: str) -> bool:
-    """True when the model accepts the ``clear_tool_uses_20250919`` beta."""
+    """Check whether the model accepts the ``clear_tool_uses_20250919`` beta."""
     return base_model_id(model_id) in _CONTEXT_MANAGEMENT_MODELS
 
 
@@ -196,7 +196,7 @@ def build_context_management(
     server_side_context_management: bool = False,
     trigger_tokens: int = 0,
     target_input_tokens: int = _DEFAULT_API_TARGET_INPUT_TOKENS,
-    tools: Sequence[Tool] = (),
+    tools: Sequence[ToolResultClearable] = (),
 ) -> dict[str, list[MutableJSON]] | None:
     """Build ``context_management`` body for the Anthropic API.
 
@@ -222,25 +222,24 @@ def build_context_management(
         )
         edits.append({"type": "clear_thinking_20251015", "keep": keep})
     if server_side_context_management and trigger_tokens > 0:
-        clearable = [t.name for t in tools if getattr(t, "clearable_results", False)]
-        unclearable = [
-            t.name for t in tools if not getattr(t, "clearable_results", False)
+        clearable: list[MutableJSONValue] = [
+            t.name for t in tools if t.clearable_results
+        ]
+        unclearable: list[MutableJSONValue] = [
+            t.name for t in tools if not t.clearable_results
         ]
         clear_at_least = max(trigger_tokens - target_input_tokens, 1_000)
         edits.append(
-            cast(
-                MutableJSON,
-                {
-                    "type": "clear_tool_uses_20250919",
-                    "trigger": {"type": "input_tokens", "value": trigger_tokens},
-                    "clear_at_least": {
-                        "type": "input_tokens",
-                        "value": clear_at_least,
-                    },
-                    "clear_tool_inputs": clearable,
-                    "exclude_tools": unclearable,
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": trigger_tokens},
+                "clear_at_least": {
+                    "type": "input_tokens",
+                    "value": clear_at_least,
                 },
-            ),
+                "clear_tool_inputs": clearable,
+                "exclude_tools": unclearable,
+            },
         )
     return {"edits": edits} if edits else None
 
@@ -254,7 +253,9 @@ class Anthropic:
     """
 
     # Latest model we roll to when ``model_id`` is None. Bump on release.
-    DEFAULT_MODEL = "claude-opus-5"
+    # Bare id, no ``+1m``: fable-5-1 is in ``_DEFAULT_1M_MODELS``, so its
+    # window is already 1M without the context beta.
+    DEFAULT_MODEL = "claude-fable-5-1"
     DEFAULT_UTILITY_MODEL = "claude-haiku-4-5"
 
     # ``chars_per_token`` measured via ``messages.count_tokens`` on a 2.6M-char
@@ -371,11 +372,17 @@ class Anthropic:
             redact_thinking=redact_thinking,
         )
 
-    def model(self, model_id: str | None = None) -> _AnthropicModel:
+    def model(
+        self, model_id: str | None = None, **provider_options: object
+    ) -> _AnthropicModel:
         """Create a model backend.
 
         Args:
           model_id: Catalog id with optional tags, or a role name.
+          provider_options: Transport-specific options, ignored here. Declared
+            because ``Provider.model`` declares them: a subclass whose
+            transport DOES take options (the CLI's MCP servers and timeouts)
+            is otherwise a narrower override of this method.
 
         Returns:
           model: Anthropic model backend.
@@ -386,6 +393,7 @@ class Anthropic:
               model does not offer.
 
         """
+        del provider_options
         mid = model_id if model_id is not None else "default"
         capability, settings = resolve(
             mid, models=self.CAPABILITIES, roles=self.ROLES, transport=self.TRANSPORT
@@ -543,7 +551,7 @@ def _is_prompt_too_long_text(
     *,
     error_body: Mapping[str, object] | None = None,
 ) -> bool:
-    """True if the error describes a context-window overflow.
+    """Check whether the error describes a context-window overflow.
 
     Prefers the structured ``error.type``/``error.message`` fields on
     ``error_body`` when present: an Anthropic ``invalid_request_error``
@@ -630,8 +638,7 @@ def _guard_stream_interrupt(
     kind: str,
     model_id: str,
 ) -> None:
-    """Raise ``StreamInterruptedError`` if a ``model_tool_use`` response arrived
-    without any ``ToolCall``s.
+    """Raise ``StreamInterruptedError`` if a ``model_tool_use`` response arrived without any ``ToolCall``s.
 
     Gates on actual content rather than the API's ``stop_reason``, which is
     unreliable. When violated, the tool block was almost certainly dropped
@@ -658,13 +665,13 @@ def _request_id(e: BaseException) -> str | None:
     """Best-effort request-id extractor for an anthropic error."""
     rid = getattr(e, "request_id", None)
     if rid:
-        return cast("str | None", rid)
+        return cast(str | None, rid)
     resp = getattr(e, "response", None)
     headers = getattr(resp, "headers", None)
     if headers is not None:
         try:
             return cast(
-                "str | None", headers.get("request-id") or headers.get("x-request-id")
+                str | None, headers.get("request-id") or headers.get("x-request-id")
             )
         except Exception:  # noqa: BLE001 -- best-effort, must not mask the original error
             return None
@@ -1054,13 +1061,16 @@ async def _raw_message_stream(
     if response.status_code >= 400:
         await _raise_anthropic_status_error(raw_sdk, response)
     _response_headers_var.set(response.headers)
-    return AsyncStream(
-        cast_to=cast(
-            type[RawMessageStreamEvent], anthropic.types.RawMessageStreamEvent
-        ),
+    # ``RawMessageStreamEvent`` is an ``Annotated`` discriminated-union alias, not
+    # a class, so it cannot satisfy the SDK's ``cast_to: type[_T]``. The SDK feeds
+    # its own streams the same alias (``_response._parse`` unwraps ``Annotated``
+    # before use), so narrowing this to one member class would break decoding.
+    stream: AsyncStream[RawMessageStreamEvent] = AsyncStream(  # pyright: ignore[reportUnknownVariableType] -- the Annotated `cast_to` leaves `_T` unsolved
+        cast_to=anthropic.types.RawMessageStreamEvent,  # ty: ignore[invalid-argument-type] -- SDK alias is Annotated[...], not type[_T]; unwrapped at runtime  # pyright: ignore[reportArgumentType] -- same
         response=response,
         client=sdk,
     )
+    return stream
 
 
 def _final_request_options(
@@ -1185,7 +1195,7 @@ def _build_messages(
             # Emitting a separate role=user message breaks Anthropic's
             # strict alternation and triggers HTTP 400.
             if pending_tool_results:
-                pending_tool_results.extend(cast(list[dict[str, object]], blocks))
+                pending_tool_results.extend(blocks)
                 _flush_tool_results(messages, pending_tool_results)
             elif blocks:
                 messages.append(
@@ -1223,9 +1233,9 @@ def _user_blocks(
     entry: AgentSendMessage | UserMessage,
     max_image_dim: int,
     max_image_bytes: int,
-) -> list[object]:
+) -> list[dict[str, object]]:
     """Build Anthropic content blocks from a UserMessage."""
-    blocks: list[object] = []
+    blocks: list[dict[str, object]] = []
     if entry.text:
         blocks.append({"type": "text", "text": entry.text})
     for att in entry.attachments:
@@ -1274,7 +1284,7 @@ def _assistant_blocks(
 
 
 def _is_orphan_thinking(block: Mapping[str, object]) -> bool:
-    """True for signed ``thinking`` blocks whose signed body is gone."""
+    """Check whether a signed ``thinking`` block's signed body is gone."""
     return (
         block.get("type") == "thinking"
         and bool(block.get("signature"))
@@ -1283,7 +1293,7 @@ def _is_orphan_thinking(block: Mapping[str, object]) -> bool:
 
 
 def _is_native_thinking(block: Mapping[str, object]) -> bool:
-    """True for Anthropic-native thinking-block types the API accepts."""
+    """Check whether a block is an Anthropic-native thinking-block type the API accepts."""
     return block.get("type") in ("thinking", "redacted_thinking")
 
 
@@ -1366,7 +1376,7 @@ def _attachment_block(
 
 
 def _is_image_mime(descriptor: str) -> bool:
-    """True for image MIME types accepted by Anthropic image blocks."""
+    """Check whether a MIME type is accepted by Anthropic image blocks."""
     return descriptor in {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
@@ -1398,9 +1408,39 @@ def _is_valid_tool_name(name: str) -> bool:
     return name.isidentifier()
 
 
-def _parse_response(
-    raw: anthropic.types.Message, model: _AnthropicModel
-) -> ModelResponse:
+class _Usage(Protocol):
+    """The usage fields ``_parse_response`` reads off a raw message."""
+
+    @property
+    def input_tokens(self) -> int: ...
+    @property
+    def output_tokens(self) -> int: ...
+
+
+class _RawMessage(Protocol):
+    """The raw-message surface ``_parse_response`` consumes.
+
+    Narrower than ``anthropic.types.Message`` on purpose: the SDK type
+    carries fields this function never touches, and declaring it forced
+    every test building a stand-in to suppress the argument type. Members
+    are read-only properties -- a bare attribute is read-WRITE and so
+    invariant, which the SDK's concrete `list`/`Literal` fields cannot
+    satisfy.
+    """
+
+    @property
+    def content(self) -> Sequence[object]: ...
+    @property
+    def usage(self) -> _Usage: ...
+    @property
+    def stop_reason(self) -> str | None: ...
+    @property
+    def stop_sequence(self) -> str | None: ...
+    @property
+    def id(self) -> str: ...
+
+
+def _parse_response(raw: _RawMessage, model: _AnthropicModel) -> ModelResponse:
     """Convert Anthropic Message to ModelResponse with AssistantMessage."""
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []

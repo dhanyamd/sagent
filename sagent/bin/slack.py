@@ -1,10 +1,9 @@
 #!/bin/sh
-# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# ruff: noqa: EXE003, D300, D205 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
-
-Slack service: deterministic message routing to persistent agents.
+Slack service.
 
 Connects to Slack via Socket Mode, routes messages to persistent child
 agents using deterministic rules (log channels, @mentions, thread
@@ -86,7 +85,7 @@ from sagent.compaction.summary import SummaryCompactor
 from sagent.lib.custom_json import MutableJSON
 from sagent.lib.userdirs import data_dir
 from sagent.providers import build_provider
-from sagent.tools.slack import Slack
+from sagent.tools.slack import Slack, SlackSender
 from sagent.types.capability import ThinkingEffort
 from sagent.types.model import ModelRecipe
 from sagent.types.runtime import (
@@ -270,7 +269,7 @@ class SlackAdapter:
             web_client=self._web,
         )
         self._bot_token = bot_token
-        self._slack = Slack(token=bot_token)
+        self._slack: SlackSender = Slack(token=bot_token)
         self._model = model
         self._model_recipe = model_recipe
         self._persona_dir = persona_dir
@@ -314,7 +313,7 @@ class SlackAdapter:
         if user_id in self._user_names:
             return self._user_names[user_id]
         try:
-            resp = await self._web.users_info(user=user_id)  # pyright: ignore[reportUnknownMemberType] -- slack_sdk stubs
+            resp = await self._web.users_info(user=user_id)
             user_obj = cast(MutableJSON, resp.get("user") or {})
             profile = cast(MutableJSON, user_obj.get("profile") or {})
             name = str(
@@ -815,7 +814,7 @@ _LOG_FLUSH_CHARS: Final = 3_500
 async def _flush_log(
     buffer: list[str],
     channel_id: str,
-    slack: Slack,
+    slack: SlackSender,
     *,
     msg_limit: int = 3900,
 ) -> None:

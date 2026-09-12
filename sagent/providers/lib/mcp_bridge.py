@@ -409,10 +409,7 @@ class ToolsBridge:
                 mcp_types.Tool(
                     name=t.name,
                     description=t.description,
-                    input_schema=cast(
-                        dict[str, object],
-                        json_unfreeze(bg_augmented_schema(t.directive_schema)),
-                    ),
+                    input_schema=json_unfreeze(bg_augmented_schema(t.directive_schema)),
                 )
                 for t in self._tools.values()
             ]
@@ -583,7 +580,7 @@ class ToolsBridge:
         return results
 
     def has_pending_detached(self) -> bool:
-        """True while any detached tool run is still in flight."""
+        """Check whether any detached tool run is still in flight."""
         return bool(self._bg_tasks)
 
     @property

@@ -49,7 +49,7 @@ from sagent.types.runtime import (
 
 
 def _priced_model(prices: PriceCatalog) -> OpenAICompatModel:
-    """A model carrying ``prices`` and otherwise every capability default."""
+    """Return a model carrying ``prices`` and otherwise every capability default."""
     capability = ModelCapability(prices=prices)
     return OpenAICompatModel(
         provider=OpenAICompat.from_key("k"),
@@ -59,7 +59,7 @@ def _priced_model(prices: PriceCatalog) -> OpenAICompatModel:
 
 
 def _free_model() -> OpenAICompatModel:
-    """A model whose every rate is zero -- cost is not what these assert."""
+    """Return a model whose every rate is zero -- cost is not what these assert."""
     return _priced_model(PriceCatalog({PriceCatalogProduct(): TokenPrice()}))
 
 
@@ -77,7 +77,7 @@ def _billed_model() -> OpenAICompatModel:
 
 
 def _tiktoken_model() -> OpenAICompatModel:
-    """An OpenAI model whose text counts use the local tiktoken encoding."""
+    """Return an OpenAI model whose text counts use the local tiktoken encoding."""
     capability = ModelCapability(
         model_id="gpt-5.6-sol",
         prices=PriceCatalog({PriceCatalogProduct(): TokenPrice()}),
@@ -173,14 +173,11 @@ def test_extract_usage_reports_full_input_and_cache_read_separately() -> None:
     split (input minus cache) happens later in ``consume_stream`` -- see
     :func:`test_consume_stream_input_tokens_exclude_cache_read`.
     """
-    usage = cast(
-        MutableJSON,
-        {
-            "prompt_tokens": 1000,
-            "completion_tokens": 100,
-            "prompt_tokens_details": {"cached_tokens": 400},
-        },
-    )
+    usage: MutableJSON = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 100,
+        "prompt_tokens_details": {"cached_tokens": 400},
+    }
     input_tokens, output_tokens, cache_read, cache_write = _extract_usage(usage)
     assert input_tokens == 1000
     assert output_tokens == 100
@@ -631,7 +628,8 @@ def _make_provider_with_mock(
 
 @pytest.mark.asyncio
 async def test_stream_unrelated_400_propagates_as_http_error() -> None:
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(400, text="malformed body")
 
     transport = httpx2.MockTransport(handle)
@@ -649,7 +647,8 @@ async def test_stream_parses_sse_via_mock_transport() -> None:
         b"data: [DONE]\n\n"
     )
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(
             200,
             content=sse_body,
@@ -693,7 +692,8 @@ async def test_stream_4xx_context_overflow_raises_prompt_too_long(
     window helps) rather than routing to byte-overflow recovery.
     """
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(status_code, text=message)
 
     transport = httpx2.MockTransport(handle)
@@ -710,7 +710,8 @@ async def test_stream_413_byte_body_raises_request_too_large() -> None:
     recovery (shed attachment bytes), not token-overflow recovery.
     """
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(413, text="Request entity too large")
 
     transport = httpx2.MockTransport(handle)
@@ -723,7 +724,8 @@ async def test_stream_413_byte_body_raises_request_too_large() -> None:
 async def test_stream_500_with_overflow_keyword_is_http_error_not_overflow() -> None:
     """5xx server errors are infrastructure, never overflow (stream path)."""
 
-    def handle(_request: httpx2.Request) -> httpx2.Response:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(500, text="internal error: too long traceback")
 
     transport = httpx2.MockTransport(handle)

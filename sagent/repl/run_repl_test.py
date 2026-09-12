@@ -149,7 +149,8 @@ def test_install_input_queue_committer_preserves_existing_before_tool_spawn_hook
 ):
     original_error = ModelResponseError(RuntimeError("too many tool rounds"))
 
-    def _original(_message: AssistantMessage) -> RuntimeEvent | None:
+    def _original(message: AssistantMessage) -> RuntimeEvent | None:
+        del message
         return original_error
 
     agent = _QueueAgent()
@@ -194,7 +195,8 @@ def test_install_input_queue_committer_composes_later_before_tool_spawn_hook() -
     _ = install_input_queue_committer(_as_queue_agent(agent), queues)
     later_error = ModelResponseError(RuntimeError("later hook"))
 
-    def _later(_message: AssistantMessage) -> RuntimeEvent | None:
+    def _later(message: AssistantMessage) -> RuntimeEvent | None:
+        del message
         return later_error
 
     agent.runtime.before_tool_spawn = _later
@@ -258,7 +260,8 @@ def test_install_input_queue_committer_uninstall_preserves_later_hook() -> None:
     uninstall = install_input_queue_committer(_as_queue_agent(agent), queues)
     later_error = ModelResponseError(RuntimeError("later owner"))
 
-    def _later_hook(_message: AssistantMessage) -> RuntimeEvent | None:
+    def _later_hook(message: AssistantMessage) -> RuntimeEvent | None:
+        del message
         return later_error
 
     agent.runtime.before_tool_spawn = _later_hook
@@ -929,14 +932,16 @@ async def test_run_repl_invokes_replay_messages(
 
     calls: list[object] = []
 
-    def _recording_replay(agent: object, _printer: object) -> None:
+    def _recording_replay(agent: object, printer: object) -> None:
+        del printer
         calls.append(agent)
 
     fake_pump: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
 
     def _stub_spawn(
-        _agent: object, _source: object, **_kwargs: object
+        agent: object, source: object, **_kwargs: object
     ) -> asyncio.Task[None]:
+        del agent, source
         return fake_pump
 
     run_repl_mod = sys.modules["sagent.repl.run_repl"]
@@ -1003,20 +1008,22 @@ async def test_run_repl_unwinds_observers_and_before_tool_spawn(
     def _stub_session(*_args: object, **_kwargs: object) -> MagicMock:
         return MagicMock()
 
-    def _stub_history(_path: object) -> MagicMock:
+    def _stub_history(path: object) -> MagicMock:
+        del path
         return MagicMock()
 
     def _stub_input_source(*_args: object, **_kwargs: object) -> MagicMock:
         return MagicMock()
 
-    def _stub_replay(_agent: object, _printer: object) -> None:
-        return None
+    def _stub_replay(agent: object, printer: object) -> None:
+        del agent, printer
 
     fake_pump: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
 
     def _stub_spawn(
-        _agent: object, _source: object, **_kwargs: object
+        agent: object, source: object, **_kwargs: object
     ) -> asyncio.Task[None]:
+        del agent, source
         return fake_pump
 
     run_repl_mod = sys.modules["sagent.repl.run_repl"]
@@ -1081,14 +1088,16 @@ async def test_run_repl_unwinds_when_setup_raises_after_install(
     def _stub_mock(*_args: object, **_kwargs: object) -> MagicMock:
         return MagicMock()
 
-    def _raising_replay(_agent: object, _printer: object) -> None:
+    def _raising_replay(agent: object, printer: object) -> None:
+        del agent, printer
         raise RuntimeError("corrupt tape")
 
     fake_pump: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
 
     def _stub_spawn(
-        _agent: object, _source: object, **_kwargs: object
+        agent: object, source: object, **_kwargs: object
     ) -> asyncio.Task[None]:
+        del agent, source
         return fake_pump
 
     run_repl_mod = sys.modules["sagent.repl.run_repl"]
@@ -1110,9 +1119,9 @@ async def test_run_repl_unwinds_when_setup_raises_after_install(
     )
 
 
-def _noop_replay(_agent: object, _printer: object) -> None:
+def _noop_replay(agent: object, printer: object) -> None:
     """Stand-in for ``replay_messages`` in run_repl teardown tests."""
-    return
+    del agent, printer
 
 
 @pytest.mark.asyncio
@@ -1161,8 +1170,9 @@ async def test_run_repl_unwinds_when_teardown_step_raises(
     fake_pump: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
 
     def _stub_spawn(
-        _agent: object, _source: object, **_kwargs: object
+        agent: object, source: object, **_kwargs: object
     ) -> asyncio.Task[None]:
+        del agent, source
         return fake_pump
 
     run_repl_mod = sys.modules["sagent.repl.run_repl"]
@@ -1224,14 +1234,15 @@ async def test_run_repl_creates_history_parent_directory(
     def _stub_mock(*_args: object, **_kwargs: object) -> MagicMock:
         return MagicMock()
 
-    def _stub_replay(_agent: object, _printer: object) -> None:
-        return None
+    def _stub_replay(agent: object, printer: object) -> None:
+        del agent, printer
 
     fake_pump: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
 
     def _stub_spawn(
-        _agent: object, _source: object, **_kwargs: object
+        agent: object, source: object, **_kwargs: object
     ) -> asyncio.Task[None]:
+        del agent, source
         return fake_pump
 
     run_repl_mod = sys.modules["sagent.repl.run_repl"]
@@ -1620,7 +1631,7 @@ def _history_user_texts(runtime: agent_runtime.AgentRuntime) -> list[str]:
 
 
 def _history_has(runtime: agent_runtime.AgentRuntime, needle: str) -> bool:
-    """True when ``needle`` appears in any user message (coalesced or not)."""
+    """Return True when ``needle`` appears in any user message (coalesced or not)."""
     return any(needle in text for text in _history_user_texts(runtime))
 
 

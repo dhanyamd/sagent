@@ -1069,7 +1069,7 @@ async def test_has_pending_background_predicate_table() -> None:
             tool_name="x",
             queue_id="q",
             started=0.0,
-            kind=cast("Literal['tool', 'subagent', 'detached']", kind),
+            kind=cast(Literal["tool", "subagent", "detached"], kind),
             lifecycle="serviced",
             hidden=hidden,
             persistent_run_id="r" if kind == "subagent" else "",
@@ -1641,7 +1641,8 @@ def test_change_model_builds_the_provider_without_construction_options(
     del patched_build_provider
     a = _build_agent_with_spec()
     _ = a.change_model(model_id="claude-sonnet-4-6")
-    build_provider = cast(Mock, providers_module.build_provider)
+    build_provider = providers_module.build_provider
+    assert isinstance(build_provider, Mock)
     build_provider.assert_called_with("Anthropic", "api", account=None)
 
 
@@ -3882,7 +3883,7 @@ class _TokenIdleByteTightModel(StubModel):
 def _sent_turn(
     attachment: BytesMessage,
 ) -> list[ModelContextEvent]:
-    """A compactable (already-sent) turn: AM tool_call + its ToolResult.
+    """Build a compactable (already-sent) turn: AM tool_call + its ToolResult.
 
     The byte gate only counts attachments in the prefix up to and including
     the last ``AssistantMessage`` -- the bytes that rode in a prior request
@@ -8722,15 +8723,16 @@ async def test_serve_forever_rejects_a_concurrent_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drive_until_first_idle_propagates_a_driver_crash() -> None:
+async def test_drive_until_first_idle_propagates_a_driver_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A crashed loop must not read as an empty successful result."""
     a = _build_agent()
 
     async def _boom() -> None:
         raise RuntimeError("boom")
 
-    # ty: ignore[invalid-assignment] -- stubbing the driver is the point
-    a.serve_forever = _boom
+    monkeypatch.setattr(a, "serve_forever", _boom)
     with pytest.raises(RuntimeError, match="boom"):
         _ = await a.drive_until_first_idle(UserMessage(text="hi"))
 
@@ -8761,18 +8763,25 @@ def test_tool_registry_keeps_detached_calls_however_old(
     registry_max = 8
     monkeypatch.setattr(agent_module, "_TOOL_REGISTRY_MAX", registry_max)
     a = _build_agent()
-    a.runtime.detached["old"] = cast(asyncio.Task[None], None)
-    a._tool_registry["old"] = ("Bash", 0.0)
-    for i in range(registry_max + 2):
-        a._track_tool_registry(
-            ModelResponseComplete(
-                message=AssistantMessage(
-                    text="",
-                    tool_calls=(ToolCall(id=f"c{i}", name="Echo", args={}),),
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(asyncio.sleep(0))
+        a.runtime.detached["old"] = task
+        a._tool_registry["old"] = ("Bash", 0.0)
+        for i in range(registry_max + 2):
+            a._track_tool_registry(
+                ModelResponseComplete(
+                    message=AssistantMessage(
+                        text="",
+                        tool_calls=(ToolCall(id=f"c{i}", name="Echo", args={}),),
+                    ),
                 ),
-            ),
-        )
-    assert a._tool_registry["old"] == ("Bash", 0.0)
+            )
+        assert a._tool_registry["old"] == ("Bash", 0.0)
+        _ = task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+    finally:
+        loop.close()
 
 
 @pytest.mark.asyncio

@@ -5,12 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
-from typing import cast, override
+from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from anthropic.types import MessageParam
-
-import anthropic as anthropic_sdk
 import httpx2
 import pytest
 
@@ -25,6 +22,7 @@ from sagent.providers.anthropic.api import (
     _is_prompt_too_long_text,
     _parse_response,
     _raw_message_stream,
+    _RawMessage,
     _tool_result_block,
     _tool_use_block,
     build_context_management,
@@ -63,8 +61,21 @@ from sagent.types.runtime import (
 from sagent.types.tools import Tool
 
 
+if TYPE_CHECKING:
+    from anthropic.types import MessageParam
+
+    import anthropic as anthropic_sdk
+else:
+    from wrapt import lazy_import
+
+    # The subject module defers the SDK (569ms cold); importing it eagerly
+    # here would put that back onto every worker's collection.
+    anthropic_sdk = lazy_import("anthropic")
+    MessageParam = lazy_import("anthropic.types", "MessageParam")
+
+
 def _free_model() -> _AnthropicModel:
-    """A model whose every rate is zero -- cost is not what these assert."""
+    """Return a model whose every rate is zero -- cost is not what these assert."""
     m = Anthropic.from_key("k").model("claude-opus-4-7")
     m._capability = replace(
         m.capability, prices=PriceCatalog({PriceCatalogProduct(): TokenPrice()})
@@ -429,7 +440,7 @@ def _build_anthropic_message(
     cache_creation: int = 0,
     cache_read: int = 0,
     speed: str | None = None,
-) -> object:
+) -> _RawMessage:
     """Return a duck-typed object mimicking ``anthropic.types.Message``."""
     # Use the real anthropic SDK classes via the lazy-imported module so
     # ``isinstance`` checks inside ``_parse_response`` succeed.
@@ -455,12 +466,12 @@ def _build_anthropic_message(
     msg.stop_sequence = None
     msg.id = "msg_xyz"
     msg._request_id = "req_xyz"
-    return msg
+    return cast(_RawMessage, msg)
 
 
 def test_parse_response_text_only() -> None:
     raw = _build_anthropic_message(text="hi", input_tokens=5, output_tokens=2)
-    resp = _parse_response(raw, _free_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _free_model())
     assert resp.message.text == "hi"
     assert resp.stop_reason == "model_finished"
     assert resp.tokens.request == 5
@@ -472,7 +483,7 @@ def test_parse_response_tool_call_extracted() -> None:
         tool_calls=(("toolu_xyz", "Bash", {"cmd": "ls"}),),
         stop_reason="tool_use",
     )
-    resp = _parse_response(raw, _free_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _free_model())
     assert len(resp.message.tool_calls) == 1
     call = resp.message.tool_calls[0]
     assert call.id == "toolu_xyz"
@@ -500,7 +511,7 @@ def test_parse_response_drops_placeholder_tool_name() -> None:
         ),
         stop_reason="tool_use",
     )
-    resp = _parse_response(raw, _free_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _free_model())
     assert [c.name for c in resp.message.tool_calls] == ["Bash"]
 
 
@@ -522,7 +533,7 @@ def test_parse_response_cache_tokens_split_correctly() -> None:
             }
         ),
     )
-    resp = _parse_response(raw, model)  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, model)
     assert resp.tokens.cache_write == 200
     assert resp.tokens.cache_read == 400
     # input cost = 1000*1 + 200*4 + 400*0.5 = 2000 / 1M = 0.002.
@@ -533,7 +544,7 @@ def test_parse_response_cache_tokens_split_correctly() -> None:
 
 def test_parse_response_carries_message_and_request_ids() -> None:
     raw = _build_anthropic_message()
-    resp = _parse_response(raw, _free_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _free_model())
     assert resp.message_id == "msg_xyz"
     assert resp.request_id == "req_xyz"
 
@@ -612,6 +623,19 @@ def test_anthropic_default_model_resolves() -> None:
     assert m.capability.model_id == Anthropic.DEFAULT_MODEL
 
 
+def test_anthropic_default_model_is_fable_5_1_untagged() -> None:
+    """Fable 5.1 is natively 1M, so the default carries no ``+1m`` tag.
+
+    ``context_betas`` withholds the unnecessary context beta for native 1M
+    models, regardless of an explicit context tag.
+    """
+    assert Anthropic.DEFAULT_MODEL == "claude-fable-5-1"
+    assert Anthropic.DEFAULT_UTILITY_MODEL == "claude-haiku-4-5"
+    p = Anthropic.from_key("k")
+    assert p.model().limits.max_request_tokens == 1_000_000
+    assert "context-1m-2025-08-07" not in context_betas(Anthropic.DEFAULT_MODEL)
+
+
 def test_anthropic_utility_model_uses_haiku() -> None:
     p = Anthropic.from_key("k")
     m = p.utility_model()
@@ -668,7 +692,6 @@ def test_anthropic_fable_5_1_one_million_alias() -> None:
 
 def test_anthropic_fable_model_profile() -> None:
     p = Anthropic.from_key("k")
-    assert Anthropic.DEFAULT_MODEL == "claude-opus-5"
     m = p.model("claude-fable-5")
     assert m.limits.max_request_tokens == 1_000_000
     assert m.limits.max_response_tokens == 128_000
@@ -857,7 +880,7 @@ def test_parse_response_bills_fast_when_server_reports_fast() -> None:
     raw = _build_anthropic_message(
         text="x", input_tokens=1_000_000, output_tokens=1_000_000, speed="fast"
     )
-    resp = _parse_response(raw, _fast_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _fast_model())
     assert (resp.spend.request + resp.spend.cache_write + resp.spend.cache_read) == 10.0
     assert resp.spend.response == 50.0
 
@@ -866,7 +889,7 @@ def test_parse_response_bills_standard_when_server_falls_back() -> None:
     raw = _build_anthropic_message(
         text="x", input_tokens=1_000_000, output_tokens=1_000_000, speed="standard"
     )
-    resp = _parse_response(raw, _fast_model())  # pyright: ignore[reportArgumentType]  # ty: ignore[invalid-argument-type] -- duck-typed SDK mock
+    resp = _parse_response(raw, _fast_model())
     assert (resp.spend.request + resp.spend.cache_write + resp.spend.cache_read) == 5.0
     assert resp.spend.response == 25.0
 
@@ -1366,14 +1389,15 @@ def test_build_kwargs_includes_context_management_when_opted_in() -> None:
     assert any(e["type"] == "clear_tool_uses_20250919" for e in edits)
 
 
-def test_context_management_missing_clearable_results_defaults_unclearable() -> None:
-    class LegacyTool:
+def test_context_management_unclearable_tool_is_excluded() -> None:
+    class UnclearableTool:
         name = "Legacy"
+        clearable_results = False
 
     config = build_context_management(
         server_side_context_management=True,
         trigger_tokens=100_000,
-        tools=cast(Sequence[Tool], [LegacyTool()]),
+        tools=[UnclearableTool()],
     )
     assert config is not None
     edit = cast(Mapping[str, object], config["edits"][0])

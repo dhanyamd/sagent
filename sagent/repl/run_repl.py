@@ -51,6 +51,7 @@ from sagent.repl.input_queues import InputQueues
 from sagent.repl.keybindings import NavState, build_key_bindings
 from sagent.repl.render import make_render_observer
 from sagent.repl.replay import replay_messages
+from sagent.repl.slash import Controllable
 from sagent.repl.status_pane import render_status_pane
 from sagent.thinking import (
     THINKING_COMMANDS,
@@ -127,22 +128,19 @@ async def run_repl(
             printer,
             output_policy=lambda call_id: _tool_output_policy(agent, call_id),
         )
-        # Everything that mutates the runtime lives inside the ``try``: the
-        # ``finally`` below is the only path that detaches the observer,
-        # restores ``before_tool_spawn``, and cancels the pump. Replay and
-        # the title call can both raise on real input (a corrupt tape, a
-        # closed terminal), so installing outside would leak all three.
-        uninstall_committer: Callable[[], None] | None = None
-        pump_task: asyncio.Task[None] | None = None
+        # Installed before the ``try`` so each is unconditionally bound for the
+        # ``finally``: neither call can raise, while replay and the title call
+        # both can on real input (a corrupt tape, a closed terminal), which is
+        # why those stay inside.
+        agent.runtime.observers.append(render_observer)
+        uninstall_committer = install_input_queue_committer(agent, queues)
+        pump_task = spawn_repl_pump(
+            agent,
+            PromptToolkitInputSource(session, queues=queues, console=console),
+            queues=queues,
+            printer=printer,
+        )
         try:
-            agent.runtime.observers.append(render_observer)
-            uninstall_committer = install_input_queue_committer(agent, queues)
-            pump_task = spawn_repl_pump(
-                agent,
-                PromptToolkitInputSource(session, queues=queues, console=console),
-                queues=queues,
-                printer=printer,
-            )
             replay_messages(agent, printer)
             if agent.status:
                 printer.set_terminal_title(agent.status)
@@ -150,12 +148,7 @@ async def run_repl(
                 printer.set_terminal_title(agent.name)
             await agent.serve_forever()
         finally:
-            # Detach FIRST. These two lines are the whole reason the
-            # ``try`` exists; anything ahead of them (shutdown, task
-            # cancellation) can raise and would skip them, re-opening the
-            # leak. Detaching early is safe -- the observer only renders.
-            if uninstall_committer is not None:
-                uninstall_committer()
+            uninstall_committer()
             if render_observer in agent.runtime.observers:
                 agent.runtime.observers.remove(render_observer)
             agent.shutdown(force=True)
@@ -164,20 +157,19 @@ async def run_repl(
                 _ = t.cancel()
             if bg_tasks:
                 _ = await asyncio.gather(*bg_tasks, return_exceptions=True)
-            if pump_task is not None:
-                _ = pump_task.cancel()
-                try:
-                    await pump_task
-                except asyncio.CancelledError:
-                    # Only OUR cancellation is expected here. If this task
-                    # is itself being cancelled, swallowing it would break
-                    # structured cancellation, so re-raise in that case.
-                    if not pump_task.cancelled():
-                        raise
-                except Exception as exc:  # noqa: BLE001 -- pump shutdown catches any slash-handler exception; UserFacingError routed to warning, others to exception
-                    log_exception_or_warning(
-                        logger, "REPL input pump raised during shutdown", exc
-                    )
+            _ = pump_task.cancel()
+            try:
+                await pump_task
+            except asyncio.CancelledError:
+                # Only OUR cancellation is expected here. If this task
+                # is itself being cancelled, swallowing it would break
+                # structured cancellation, so re-raise in that case.
+                if not pump_task.cancelled():
+                    raise
+            except Exception as exc:  # noqa: BLE001 -- pump shutdown catches any slash-handler exception; UserFacingError routed to warning, others to exception
+                log_exception_or_warning(
+                    logger, "REPL input pump raised during shutdown", exc
+                )
             agent.cancel_background(REPL_PUMP_KEY)
     # A non-empty tape with no transcript on disk is silent data loss. The
     # runtime isolates observer exceptions (Runtime.publish), so a persistence
@@ -328,7 +320,7 @@ def _commit_local_queues(
 
 
 def do_switch_model(
-    agent: Agent,
+    agent: Controllable,
     args: str,
     printer: Printer | None,
 ) -> None:
@@ -390,7 +382,9 @@ def do_switch_model(
     _write(printer, f"[/model] {label}{queued}")
 
 
-def do_switch_thinking(agent: Agent, command: str, printer: Printer | None) -> None:
+def do_switch_thinking(
+    agent: Controllable, command: str, printer: Printer | None
+) -> None:
     """Render a ``/thinking`` slash command against the model's settings.
 
     ``show`` / ``hide`` land on ``printer.show_thinking`` -- they change
@@ -422,7 +416,7 @@ def do_switch_thinking(agent: Agent, command: str, printer: Printer | None) -> N
     _write(printer, f"[/thinking] {describe_thinking(settings, show=shown)}")
 
 
-def do_switch_effort(agent: Agent, value: str, printer: Printer | None) -> None:
+def do_switch_effort(agent: Controllable, value: str, printer: Printer | None) -> None:
     """Render an ``/effort`` slash command against the model's settings.
 
     Bare ``/effort`` (empty ``value``) prints the current effort plus the
@@ -454,8 +448,8 @@ def do_switch_effort(agent: Agent, value: str, printer: Printer | None) -> None:
     _write(printer, f"[/effort] {settings.thinking_effort}")
 
 
-def _reachable_thinking_words(agent: Agent) -> tuple[str, ...]:
-    """The ``/thinking`` words this model can actually honor.
+def _reachable_thinking_words(agent: Controllable) -> tuple[str, ...]:
+    """Return the ``/thinking`` words this model can actually honor.
 
     Each word is checked by applying it, because a word names one axis and
     inherits the rest -- ``redact`` is reachable only when the model can
@@ -465,7 +459,7 @@ def _reachable_thinking_words(agent: Agent) -> tuple[str, ...]:
     return tuple(word for word in THINKING_COMMANDS if thinking_offered(word, settings))
 
 
-async def do_login(agent: Agent, printer: Printer | None) -> None:
+async def do_login(agent: Controllable, printer: Printer | None) -> None:
     """Render a ``/login`` slash command against :meth:`Agent.relogin`.
 
     Pure REPL adapter: delegates the re-auth flow to the Agent API,
